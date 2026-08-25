@@ -1,0 +1,18 @@
+.cypher-raw-html-tab__content {
+  min-height: 12rem;
+  padding: 0.75rem;
+  overflow: auto;
+}
+
+.cypher-raw-html-tab__dialog textarea {
+  min-height: 28rem;
+  resize: vertical;
+}
+
+.cypher-raw-html-tab__dialog input[type="text"] {
+  width: 100%;
+}
+
+.cypher-raw-html-tab__upload-group input[type="file"] {
+  width: 100%;
+}
