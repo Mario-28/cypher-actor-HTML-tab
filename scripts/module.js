@@ -1,9 +1,19 @@
+/* ================================================================
+   Cypher Raw HTML Tab — v0.2.0
+   Adds a GM-configurable raw HTML tab to Cypher System PC sheets.
+   ================================================================ */
 const MODULE_ID = "cypher-raw-html-tab";
 const FLAG_SCOPE = MODULE_ID;
 const FLAG_CONTENT = "content";
 const FLAG_TAB_NAME = "tabName";
 const DEFAULT_TAB_NAME = "Custom HTML";
 
+/* Track which sheet instances have been initialized */
+const _sheetInit = new WeakSet();
+
+/* ================================================================
+   INIT
+   ================================================================ */
 Hooks.once("init", () => {
   game.settings.register(MODULE_ID, "enableScripts", {
     name: "Execute embedded scripts",
@@ -22,13 +32,29 @@ Hooks.once("init", () => {
     type: String,
     default: DEFAULT_TAB_NAME
   });
+
+  game.settings.register(MODULE_ID, "onlyPC", {
+    name: "Only add to PC sheets",
+    hint: "If enabled, the custom tab only appears on PC actor sheets.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true
+  });
 });
 
-Hooks.on("renderActorSheet", async (app, html) => {
+/* ================================================================
+   RENDER ACTOR SHEET
+   ================================================================ */
+Hooks.on("renderActorSheet", (app, html) => {
   if (game.system.id !== "cyphersystem") return;
   if (!app?.actor) return;
 
   const actor = app.actor;
+
+  /* Only PC sheets (configurable) */
+  if (game.settings.get(MODULE_ID, "onlyPC") && actor.type !== "pc") return;
+
   const root = html[0] ?? html;
   if (!root) return;
 
@@ -36,41 +62,48 @@ Hooks.on("renderActorSheet", async (app, html) => {
   const body = root.querySelector(".sheet-body");
   if (!nav || !body) return;
 
-  forceCustomTabFirst(nav, body);
+  const isFirstRender = !_sheetInit.has(app);
+
+  /* Build or update tab button and panel */
   const button = ensureCustomTabButton(nav, actor);
   const tab = ensureCustomTabPanel(body);
   renderTabContent(actor, tab);
   bindTabContextMenu(button, actor, app);
-  activateCustomTabByDefault(nav, body, app);
+
+  /* Only force-activate on first render; respect user tab choice after */
+  if (isFirstRender) {
+    activateCustomTab(nav, body, app);
+    _sheetInit.add(app);
+  }
 });
 
+/* ================================================================
+   TAB UI
+   ================================================================ */
 function ensureCustomTabButton(nav, actor) {
-  let button = nav.querySelector(`[data-tab='${MODULE_ID}']`);
+  let button = nav.querySelector(`[data-tab="${MODULE_ID}"]`);
   if (!button) {
     button = document.createElement("a");
     button.classList.add("item");
     button.dataset.tab = MODULE_ID;
     button.dataset.group = "primary";
     nav.prepend(button);
-  } else if (nav.firstElementChild !== button) {
-    nav.prepend(button);
   }
 
-  button.textContent = getTabName(actor);
-  button.title = game.user.isGM ? "Right-click to configure this tab" : button.textContent;
+  const label = getTabName(actor);
+  if (button.textContent !== label) button.textContent = label;
+  button.title = game.user.isGM ? "Right-click to configure this tab" : label;
   return button;
 }
 
 function ensureCustomTabPanel(body) {
-  let tab = body.querySelector(`.tab[data-tab='${MODULE_ID}']`);
+  let tab = body.querySelector(`.tab[data-tab="${MODULE_ID}"]`);
   if (!tab) {
     tab = document.createElement("section");
     tab.classList.add("tab", MODULE_ID);
     tab.dataset.tab = MODULE_ID;
     tab.dataset.group = "primary";
     tab.innerHTML = `<div class="${MODULE_ID}__content"></div>`;
-    body.prepend(tab);
-  } else if (body.firstElementChild !== tab) {
     body.prepend(tab);
   }
   return tab;
@@ -80,47 +113,54 @@ function renderTabContent(actor, tab) {
   const content = actor.getFlag(FLAG_SCOPE, FLAG_CONTENT) ?? "";
   const contentNode = tab.querySelector(`.${MODULE_ID}__content`);
   if (!contentNode) return;
-  contentNode.innerHTML = content;
+
+  /* Only update if content changed to avoid DOM thrashing */
+  if (contentNode.innerHTML !== content) {
+    contentNode.innerHTML = content;
+  }
+
   if (game.settings.get(MODULE_ID, "enableScripts")) executeScripts(contentNode);
 }
 
 function bindTabContextMenu(button, actor, sheetApp) {
-  if (!button || button.dataset.contextBound) return;
+  if (!button || button.dataset.contextBound === "true") return;
   button.dataset.contextBound = "true";
-  button.addEventListener("contextmenu", (event) => {
+
+  const handler = (event) => {
     event.preventDefault();
     openEditor(actor, sheetApp);
+  };
+
+  button.addEventListener("contextmenu", handler);
+
+  /* Clean up listener when sheet closes */
+  const cleanup = () => button.removeEventListener("contextmenu", handler);
+  Hooks.once("closeActorSheet", (closedApp) => {
+    if (closedApp === sheetApp) cleanup();
   });
 }
 
-function activateCustomTabByDefault(nav, body, app) {
-  for (const el of nav.querySelectorAll(".item.active")) el.classList.remove("active");
-  for (const el of body.querySelectorAll(".tab.active")) el.classList.remove("active");
+function activateCustomTab(nav, body, app) {
+  nav.querySelectorAll(".item.active").forEach((el) => el.classList.remove("active"));
+  body.querySelectorAll(".tab.active").forEach((el) => el.classList.remove("active"));
 
-  const button = nav.querySelector(`[data-tab='${MODULE_ID}']`);
-  const panel = body.querySelector(`.tab[data-tab='${MODULE_ID}']`);
+  const button = nav.querySelector(`[data-tab="${MODULE_ID}"]`);
+  const panel = body.querySelector(`.tab[data-tab="${MODULE_ID}"]`);
   if (button) button.classList.add("active");
   if (panel) panel.classList.add("active");
 
   if (app._tabs?.length) {
+    const el = app.element?.[0] ?? app.element;
     for (const tabs of app._tabs) {
       tabs.active = MODULE_ID;
-      tabs.bind(htmlElement(app));
+      if (el) tabs.bind(el);
     }
   }
 }
 
-function htmlElement(app) {
-  return app.element?.[0] ?? app.element;
-}
-
-function forceCustomTabFirst(nav, body) {
-  const existingButton = nav.querySelector(`[data-tab='${MODULE_ID}']`);
-  if (existingButton && nav.firstElementChild !== existingButton) nav.prepend(existingButton);
-  const existingPanel = body.querySelector(`.tab[data-tab='${MODULE_ID}']`);
-  if (existingPanel && body.firstElementChild !== existingPanel) body.prepend(existingPanel);
-}
-
+/* ================================================================
+   SCRIPT EXECUTION
+   ================================================================ */
 function executeScripts(container) {
   for (const oldScript of container.querySelectorAll("script")) {
     const script = document.createElement("script");
@@ -130,13 +170,20 @@ function executeScripts(container) {
   }
 }
 
+/* ================================================================
+   HELPERS
+   ================================================================ */
 function getTabName(actor) {
   return actor.getFlag(FLAG_SCOPE, FLAG_TAB_NAME) || game.settings.get(MODULE_ID, "tabName") || DEFAULT_TAB_NAME;
 }
 
+/* ================================================================
+   EDITOR DIALOG
+   ================================================================ */
 function openEditor(actor, sheetApp) {
   const existing = actor.getFlag(FLAG_SCOPE, FLAG_CONTENT) ?? "";
   const currentTabName = getTabName(actor);
+
   const uploadBlock = game.user.isGM
     ? `
       <div class="form-group stacked ${MODULE_ID}__upload-group">
